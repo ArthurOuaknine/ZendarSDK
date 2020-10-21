@@ -1,3 +1,4 @@
+import sys
 from os.path import join, exists
 from contextlib import ExitStack
 import argparse
@@ -46,6 +47,10 @@ def main():
                         type=int,
                         help="video compression quality factor",
                         default=23)
+    parser.add_argument('--point-cloud',
+                        default=False,
+                        action='store_true',
+                        help="create point cloud view instead")
     args = parser.parse_args()
 
     fig = plt.figure()
@@ -58,53 +63,62 @@ def main():
         if args.output_dir is not None:
             output_path = join(args.output_dir, radar_name+".mp4")
 
-        io_path = IOPath(
-            image_pbs_path = join(args.input_dir, radar_name+".pbs"),
-            pc_pbs_path = join(args.input_dir, radar_name+"_points.pbs"),
-            output_path = output_path)
+        if args.point_cloud:
+            io_path = IOPath(
+                image_pbs_path = None,
+                pc_pbs_path = join(args.input_dir, radar_name+"_points.pbs"),
+                output_path = output_path)
+        else:
+            io_path = IOPath(
+                image_pbs_path = join(args.input_dir, radar_name+"_images.pbs"),
+                pc_pbs_path = None,
+                output_path = output_path)
 
         input_output_paths.append(io_path)
 
     # create all videos
     for io_path in input_output_paths:
-        image_streamer = None
-        pc_streamer = None
         video_writer = None
+        data_streamer = None
 
-        if exists(io_path.image_pbs_path):
-            image_streamer = convert_image_stream(io_path.image_pbs_path)
+        if io_path.image_pbs_path is not None:
+            if not exists(io_path.image_pbs_path):
+                sys.exit("%s does not exist" % io_path.image_pbs_path)
 
-        if exists(io_path.pc_pbs_path):
-            pc_streamer = convert_point_cloud_stream(io_path.pc_pbs_path)
+            data_streamer = convert_image_stream(io_path.image_pbs_path)
 
-        with ExitStack() as stack:
-            # for radar_image, im_rgb in image_streamer:
-            for im_rgb in pc_streamer:
-                (im_height, im_width, _) = im_rgb.shape
-                # im_rgb = overlay_metadata(radar_image, im_rgb)
+        else:
+            if not exists(io_path.pc_pbs_path):
+                sys.exit("%s does not exist" % io_path.pc_pbs_path)
 
-                # setup onscreen display
-                if artist is None:
-                    artist = fig.gca().imshow(
-                        np.zeros(im_rgb.shape, dtype=np.uint8))
+            data_streamer = convert_point_cloud_stream(io_path.pc_pbs_path)
 
-                # setup video writer
-                if args.output_dir is not None and video_writer is None:
-                    video_writer = VideoWriter(io_path.output_path,
-                                               im_width, im_height,
-                                               args.frame_rate,
-                                               args.quality_factor)
+        for raw_data, im_rgb in data_streamer:
+            (im_height, im_width, _) = im_rgb.shape
+            im_rgb = overlay_metadata(raw_data, im_rgb)
 
-                    video_writer = stack.enter_context(video_writer)
+            # setup onscreen display
+            if artist is None:
+                artist = fig.gca().imshow(
+                    np.zeros(im_rgb.shape, dtype=np.uint8))
 
-                # write out frame
-                if video_writer is not None:
-                    video_writer(im_rgb)
+            # setup video writer
+            if args.output_dir is not None and video_writer is None:
+                video_writer = VideoWriter(io_path.output_path,
+                                           im_width, im_height,
+                                           args.frame_rate,
+                                           args.quality_factor)
 
-                # on screen display
-                artist.set_data(im_rgb)
-                fig.canvas.draw()
-                plt.pause(1e-4)
+                video_writer = stack.enter_context(video_writer)
+
+            # write out frame
+            if video_writer is not None:
+                video_writer(im_rgb)
+
+            # on screen display
+            artist.set_data(im_rgb)
+            fig.canvas.draw()
+            plt.pause(1e-4)
 
 
 def convert_image_stream(image_pbs_path):
@@ -127,7 +141,6 @@ def convert_point_cloud_stream(pc_pbs_path):
     """
     convert one radar image pbs file to RGB stream
     """
-
     # default imaging area
     xmin = 0
     xmax = 60
@@ -159,19 +172,11 @@ def convert_point_cloud_stream(pc_pbs_path):
                            color=(255, 0, 0),
                            thickness=-1)
 
-                """
-                if y < 0 or y > imsize_y:
-                    continue
-
-                if x < 0 or x > imsize_x:
-                    continue
-
-                # pc_image[int(y), int(x), 0] = 255
-                """
-            yield pc_image
+            yield pc, pc_image
 
 
-def overlay_metadata(radar_image, im_rgb, show_range_marker=False):
+def overlay_metadata(raw_image, im_rgb, show_range_marker=False):
+    """
     # overlay range markers
     if show_range_marker:
         radar_position = radar_image.extrinsic.position
@@ -181,10 +186,11 @@ def overlay_metadata(radar_image, im_rgb, show_range_marker=False):
                                 center,
                                 pixels_per_meter,
                                 separation=5)
+    """
 
     # overlay timestamp
-    timestamp = "%2.2f" % radar_image.timestamp
-    frame_id = str(radar_image.frame_id)
+    timestamp = "%2.2f" % raw_image.timestamp
+    frame_id = "%d" % raw_image.frame_id
     im_rgb = draw_timestamp(im_rgb, frame_id + ":" + timestamp)
 
     return im_rgb
