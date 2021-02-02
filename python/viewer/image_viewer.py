@@ -62,6 +62,8 @@ def main():
                         action='store_true')
     parser.add_argument('--no-point-cloud',
                         action='store_true')
+    parser.add_argument('--color-by-elevation',
+                        action='store_true')
 
     args = parser.parse_args()
 
@@ -88,7 +90,7 @@ def main():
                     break
 
                 # create rgb image from point cloud / SAR
-                im_rgb = to_rgb_image(image_pc_pair)
+                im_rgb = to_rgb_image(image_pc_pair, args.color_by_elevation)
 
                 # flip image because image (0,0) is at top left corner
                 # while radar image (0,0) is at bottom left corner
@@ -240,7 +242,18 @@ def sync_streams(image_pbs_path, pc_pbs_path):
             sys.exit("No point cloud or image stream file")
 
 
-def to_rgb_image(image_pc_pair):
+MAX_DOPPLER = 20
+cmap_doppler = ScalarMappable(norm=Normalize(vmin=-MAX_DOPPLER,
+                                             vmax=MAX_DOPPLER),
+                              cmap=plt.get_cmap('RdYlGn'))
+
+MAX_ELEVATION = 7
+cmap_elevation = ScalarMappable(norm=Normalize(vmin=-MAX_ELEVATION,
+                                               vmax=MAX_ELEVATION),
+                                cmap=plt.get_cmap('PuOr'))
+
+
+def to_rgb_image(image_pc_pair, color_by_elevation=False):
     """
     convert raw sar image and / or point cloud into 8-bit RGB for display
     """
@@ -251,11 +264,17 @@ def to_rgb_image(image_pc_pair):
         im_rgb = radar_image_display(image_pc_pair.image.image)
 
     if image_pc_pair.pc is not None:
+        cmap = cmap_doppler
+        if color_by_elevation:
+            cmap = cmap_elevation
         if im_rgb is not None:
             for pt in image_pc_pair.pc.point_cloud:
                 # use the image model to project ecef points to sar
                 y, x = image_pc_pair.image.image_model.global_to_image(pt.ecef)
-                draw_point(im_rgb, y, x, pt.range_velocity)
+                value_to_color = pt.range_velocity
+                if color_by_elevation:
+                    value_to_color = pt.local_xyz[2]
+                draw_point(im_rgb, y, x, cmap, value_to_color)
 
         else:
             # create default image region
@@ -273,7 +292,10 @@ def to_rgb_image(image_pc_pair):
             for pt in image_pc_pair.pc.point_cloud:
                 im_pt_x = (pt.local_xyz[0] - xmin) / im_res
                 im_pt_y = (pt.local_xyz[1] - ymin) / im_res
-                draw_point(im_rgb, im_pt_y, im_pt_x, pt.range_velocity)
+                value_to_color = pt.range_velocity
+                if color_by_elevation:
+                    value_to_color = pt.local_xyz[2]
+                draw_point(im_rgb, im_pt_y, im_pt_x, cmap, value_to_color)
 
     return im_rgb
 
@@ -286,13 +308,8 @@ def overlay_timestamp(timestamp, frame_id, im_rgb):
     return im_rgb
 
 
-MAX_DOPPLER = 20
-cmap = ScalarMappable(norm=Normalize(vmin=-MAX_DOPPLER, vmax=MAX_DOPPLER),
-                      cmap=plt.get_cmap('RdYlGn'))
-
-
-def draw_point(im, y, x, range_velocity):
-    c = cmap.to_rgba(range_velocity)
+def draw_point(im, y, x, cmap, value_to_color=0):
+    c = cmap.to_rgba(value_to_color)
     r = int(255*c[0])
     g = int(255*c[1])
     b = int(255*c[2])
